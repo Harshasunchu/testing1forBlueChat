@@ -109,7 +109,12 @@ class MainActivity : ComponentActivity() {
             when (intent.action) {
                 BluetoothDevice.ACTION_FOUND -> {
                     // SDK_INT >= 35, so TIRAMISU (33) is always true.
-                    val device: BluetoothDevice? = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    }
 
                     device?.let {
                         // Basic check to avoid adding devices without names, can be more sophisticated
@@ -217,9 +222,14 @@ class MainActivity : ComponentActivity() {
 
         val requiredPermissions = mutableListOf<String>()
         // SDK_INT is always >= 35, so Build.VERSION_CODES.S (31) is always true.
-        requiredPermissions.add(Manifest.permission.BLUETOOTH_SCAN)
-        requiredPermissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
-        requiredPermissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            requiredPermissions.add(Manifest.permission.BLUETOOTH_SCAN)
+            requiredPermissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            requiredPermissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            requiredPermissions.add(Manifest.permission.BLUETOOTH)
+            requiredPermissions.add(Manifest.permission.BLUETOOTH_ADMIN)
+        }
 
 
         val missingPermissions = requiredPermissions.filter {
@@ -245,8 +255,13 @@ class MainActivity : ComponentActivity() {
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED) // Good to listen for this too
         }
         // SDK_INT >= 35, so TIRAMISU (33) is always true.
-        registerReceiver(deviceDiscoveryReceiver, filter, Context.RECEIVER_EXPORTED)
-        // At this point, Bluetooth is enabled and permissions are granted.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(deviceDiscoveryReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(deviceDiscoveryReceiver, filter)
+        }
+// At this point, Bluetooth is enabled and permissions are granted.
         // You can trigger any initial Bluetooth operations if needed, e.g., start server if applicable.
     }
 
@@ -792,7 +807,9 @@ class BluetoothService(
                     Log.e("BluetoothService", "Could not close server socket in finally block", e)
                 }
             } else if (_connectionState.value == ConnectionState.LISTENING && serverSocket == null) {
+                Log.d("BluetoothService", "Server socket unexpectedly null while in LISTENING state")
             }
+
         }
     }
 
