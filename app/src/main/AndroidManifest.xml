@@ -19,7 +19,10 @@
     <uses-feature
         android:name="android.hardware.bluetooth"
         android:required="true" />
-
+    <!-- Needed for device discovery on Android 10 and 11 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <!--<uses-permission android:name="android.permission.LOCAL_MAC_ADDRESS" /> -->
     <application
         android:allowBackup="true"
