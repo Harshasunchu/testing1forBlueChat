@@ -1,8 +1,7 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 plugins {
+    // This defines the Android Gradle Plugin for the entire project, using the version from the TOML file.
     alias(libs.plugins.android.application) apply false
+    // This defines the Kotlin Android Plugin for the entire project, using the version from the TOML file.
     alias(libs.plugins.kotlin.android) apply false
-    alias(libs.plugins.kotlin.compose) apply false
-    // Optional: Add if using kapt (e.g., for Room/Hilt later)
-    // id("org.jetbrains.kotlin.kapt") version libs.versions.kotlin apply false
 }
