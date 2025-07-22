@@ -1,31 +1,40 @@
+// In file: app/src/main/java/com/example/testing1/MainActivity.kt
+
 package com.example.testing1
 
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
+import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+import androidx.biometric.BiometricPrompt
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import androidx.fragment.app.FragmentActivity
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.testing1.bluetooth.BluetoothService
-import com.example.testing1.ui.screens.ChatScreen
-import com.example.testing1.ui.screens.IntroScreen
-import com.example.testing1.ui.screens.PermissionScreen
+import com.example.testing1.ui.screens.*
 import com.example.testing1.ui.theme.Testing1Theme
 import com.example.testing1.viewmodels.BluetoothViewModel
 import com.example.testing1.viewmodels.ViewModelFactory
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private val viewModel: BluetoothViewModel by viewModels {
         ViewModelFactory(application)
@@ -34,70 +43,114 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
         setContent {
-            Testing1Theme {
+            var themePreference by remember {
+                mutableStateOf(prefs.getString(KEY_APP_THEME, "System") ?: "System")
+            }
+
+            Testing1Theme(themePreference = themePreference) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    val navController = rememberNavController()
-                    var startDestination by remember { mutableStateOf<String?>(null) }
+                    var appState by remember { mutableStateOf<AppState>(AppState.Loading) }
 
-                    // This LaunchedEffect will run once and determine the correct starting screen
                     LaunchedEffect(Unit) {
-                        val isOnboardingCompleted = prefs.getBoolean("onboarding_completed", false)
-                        val allPermissionsGranted = checkAllPermissions()
+                        val isBiometricLockEnabled = prefs.getBoolean(KEY_BIOMETRIC_LOCK, false)
+                        val biometricManager = BiometricManager.from(this@MainActivity)
+                        val canAuth = biometricManager.canAuthenticate(BIOMETRIC_STRONG or DEVICE_CREDENTIAL) == BiometricManager.BIOMETRIC_SUCCESS
 
-                        startDestination = if (!isOnboardingCompleted) {
-                            "intro_screen"
-                        } else if (!allPermissionsGranted) {
-                            "permission_screen"
+                        appState = if (isBiometricLockEnabled && canAuth) {
+                            AppState.NeedsAuthentication
                         } else {
-                            "chat_screen"
+                            AppState.Ready
                         }
                     }
 
-                    // The NavHost is only composed once startDestination is determined
-                    if (startDestination != null) {
-                        NavHost(navController = navController, startDestination = startDestination!!) {
-                            composable("intro_screen") {
-                                IntroScreen(
-                                    onGetStartedClick = {
-                                        navController.navigate("permission_screen")
-                                    }
-                                )
-                            }
-                            composable("permission_screen") {
-                                PermissionScreen(
-                                    onPermissionsResult = { isGranted ->
-                                        if (isGranted) {
-                                            // Set onboarding as complete ONLY after permissions are granted
-                                            prefs.edit { putBoolean("onboarding_completed", true) }
-                                            viewModel.setPermissionsGranted(true)
-                                            Intent(applicationContext, BluetoothService::class.java).also {
-                                                startService(it)
-                                            }
-                                            navController.navigate("chat_screen") {
-                                                // Clear the back stack so the user can't go back to the intro/permission screens
-                                                popUpTo("intro_screen") { inclusive = true }
-                                                popUpTo("permission_screen") { inclusive = true }
-                                            }
-                                        } else {
-                                            // Handle the case where permissions are denied
-                                            // You could show a dialog explaining why the app needs permissions,
-                                            // or simply close the app.
-                                            finish() // For now, we'll just close the app
-                                        }
-                                    }
-                                )
-                            }
-                            composable("chat_screen") {
-                                ChatScreen(viewModel = viewModel)
+                    when (appState) {
+                        AppState.Loading -> {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text("Loading...")
                             }
                         }
+                        AppState.NeedsAuthentication -> {
+                            BiometricAuthHandler(
+                                activity = this@MainActivity,
+                                onAuthSuccess = { appState = AppState.Ready },
+                                onAuthFailed = {
+                                    Toast.makeText(applicationContext, "Authentication failed.", Toast.LENGTH_SHORT).show()
+                                    finish()
+                                }
+                            )
+                        }
+                        AppState.Ready -> {
+                            AppNavigation(
+                                currentTheme = themePreference,
+                                onThemeChanged = { newTheme -> themePreference = newTheme }
+                            )
+                        }
                     }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun AppNavigation(
+        currentTheme: String,
+        onThemeChanged: (String) -> Unit
+    ) {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val navController = rememberNavController()
+        var startDestination by remember { mutableStateOf<String?>(null) }
+
+        LaunchedEffect(Unit) {
+            val isOnboardingCompleted = prefs.getBoolean("onboarding_completed", false)
+            val allPermissionsGranted = checkAllPermissions()
+            startDestination = if (!isOnboardingCompleted) {
+                "intro_screen"
+            } else if (!allPermissionsGranted) {
+                "permission_screen"
+            } else {
+                "chat_screen"
+            }
+        }
+
+        if (startDestination != null) {
+            NavHost(navController = navController, startDestination = startDestination!!) {
+                composable("intro_screen") {
+                    IntroScreen(onGetStartedClick = { navController.navigate("permission_screen") })
+                }
+                composable("permission_screen") {
+                    PermissionScreen(
+                        onPermissionsResult = { isGranted ->
+                            if (isGranted) {
+                                prefs.edit { putBoolean("onboarding_completed", true) }
+                                Intent(applicationContext, BluetoothService::class.java).also { startService(it) }
+                                navController.navigate("chat_screen") {
+                                    popUpTo("intro_screen") { inclusive = true }
+                                    popUpTo("permission_screen") { inclusive = true }
+                                }
+                            } else {
+                                finish()
+                            }
+                        }
+                    )
+                }
+                composable("chat_screen") {
+                    ChatScreen(
+                        viewModel = viewModel,
+                        onNavigateToSettings = { navController.navigate("settings_screen") }
+                    )
+                }
+                composable("settings_screen") {
+                    SettingsScreen(
+                        currentTheme = currentTheme,
+                        onThemeChanged = onThemeChanged,
+                        onNavigateBack = { navController.popBackStack() }
+                    )
                 }
             }
         }
@@ -125,4 +178,45 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
     }
+}
+
+@Composable
+fun BiometricAuthHandler(
+    activity: FragmentActivity,
+    onAuthSuccess: () -> Unit,
+    onAuthFailed: () -> Unit
+) {
+    LaunchedEffect(Unit) {
+        val executor = ContextCompat.getMainExecutor(activity)
+        val biometricPrompt = BiometricPrompt(activity, executor,
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    super.onAuthenticationSucceeded(result)
+                    onAuthSuccess()
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    super.onAuthenticationError(errorCode, errString)
+                    onAuthFailed()
+                }
+            })
+
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Biometric Lock")
+            .setSubtitle("Unlock to access your chat")
+            .setAllowedAuthenticators(BIOMETRIC_STRONG or DEVICE_CREDENTIAL)
+            .build()
+
+        biometricPrompt.authenticate(promptInfo)
+    }
+
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text("Please authenticate to continue")
+    }
+}
+
+sealed class AppState {
+    data object Loading : AppState()
+    data object NeedsAuthentication : AppState()
+    data object Ready : AppState()
 }
