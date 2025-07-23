@@ -48,10 +48,18 @@ class BluetoothViewModel(application: Application) : AndroidViewModel(applicatio
         it?.error ?: flowOf(null)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    // --- NEW: Add a StateFlow to observe file transfer progress ---
     val fileTransferProgress: StateFlow<FileTransferProgress?> = _bluetoothService.flatMapLatest {
         it?.fileTransferProgress ?: flowOf(null)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    // --- NEW: Expose verification code and actions to the UI ---
+    val verificationCode: StateFlow<String?> = _bluetoothService.flatMapLatest {
+        it?.verificationCode ?: flowOf(null)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    fun acceptVerification() = _bluetoothService.value?.acceptVerification()
+    fun rejectVerification() = _bluetoothService.value?.rejectVerification()
+    // ---------------------------------------------------------
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {

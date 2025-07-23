@@ -21,10 +21,10 @@ enum class ConnectionState {
     DISCONNECTED,
     CONNECTING,
     CONNECTED,
-    LISTENING
+    LISTENING,
+    AWAITING_VERIFICATION // --- NEW: State for when we are waiting for user verification
 }
 
-// --- NEW: Add this data class for tracking file transfers ---
 data class FileTransferProgress(
     val fileName: String,
     val progress: Int, // A percentage from 0 to 100

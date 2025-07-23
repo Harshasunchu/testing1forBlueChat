@@ -1,3 +1,5 @@
+// In file: app/src/main/java/com/example/testing1/ui/screens/PermissionScreen.kt
+
 package com.example.testing1.ui.screens
 
 import android.Manifest
@@ -22,7 +24,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
-// Renamed for clarity
 private enum class OnboardingStep {
     REQUESTING_PERMISSIONS,
     ENABLING_BLUETOOTH,
@@ -37,7 +38,6 @@ fun PermissionScreen(onPermissionsResult: (Boolean) -> Unit) {
         bluetoothManager.adapter
     }
 
-    // The flow now starts by requesting permissions
     var currentStep by remember { mutableStateOf(OnboardingStep.REQUESTING_PERMISSIONS) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -45,10 +45,8 @@ fun PermissionScreen(onPermissionsResult: (Boolean) -> Unit) {
     ) { permissions ->
         val allGranted = permissions.values.all { it }
         if (allGranted) {
-            // Permissions are granted, now let's check if Bluetooth is enabled.
             currentStep = OnboardingStep.ENABLING_BLUETOOTH
         } else {
-            // Permissions were denied, the flow fails.
             onPermissionsResult(false)
         }
     }
@@ -58,9 +56,8 @@ fun PermissionScreen(onPermissionsResult: (Boolean) -> Unit) {
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             currentStep = OnboardingStep.FINISHED
-            onPermissionsResult(true) // Success!
+            onPermissionsResult(true)
         } else {
-            // User did not enable Bluetooth.
             onPermissionsResult(false)
         }
     }
@@ -68,19 +65,16 @@ fun PermissionScreen(onPermissionsResult: (Boolean) -> Unit) {
     LaunchedEffect(currentStep) {
         when (currentStep) {
             OnboardingStep.REQUESTING_PERMISSIONS -> {
-                // This step is now just for showing the rationale.
-                // The button click will trigger the permission launch.
+                // UI will handle the click
             }
             OnboardingStep.ENABLING_BLUETOOTH -> {
                 if (bluetoothAdapter?.isEnabled == true) {
-                    // If Bluetooth is already on, we're done.
                     currentStep = OnboardingStep.FINISHED
                     onPermissionsResult(true)
                 }
-                // Otherwise, the UI will be displayed to ask the user.
             }
             OnboardingStep.FINISHED -> {
-                // The success callback has already been called.
+                // Handled by the launcher result
             }
         }
     }
@@ -125,7 +119,6 @@ fun PermissionScreen(onPermissionsResult: (Boolean) -> Unit) {
     }
 }
 
-// New composable for the permission rationale step
 @Composable
 private fun PermissionRationaleStep(onRequestClick: () -> Unit) {
     Column(
@@ -152,7 +145,6 @@ private fun PermissionRationaleStep(onRequestClick: () -> Unit) {
     }
 }
 
-// Renamed the original BluetoothStateStep
 @Composable
 private fun BluetoothEnableStep(onEnableClick: () -> Unit) {
     Column(

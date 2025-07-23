@@ -73,6 +73,11 @@ class BluetoothService : Service() {
     private val _fileTransferProgress = MutableStateFlow<FileTransferProgress?>(null)
     val fileTransferProgress = _fileTransferProgress.asStateFlow()
 
+    private val _verificationCode = MutableStateFlow<String?>(null)
+    val verificationCode = _verificationCode.asStateFlow()
+    private var isVerificationAcceptedByMe = false
+    private var isVerificationAcceptedByPeer = false
+
     private val discoveryResultReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
@@ -86,6 +91,7 @@ class BluetoothService : Service() {
                         }
                     }
                 }
+
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> _isDiscovering.value = false
                 BluetoothDevice.ACTION_NAME_CHANGED -> {
                     val device: BluetoothDevice? = getDeviceFromIntent(intent)
@@ -111,9 +117,13 @@ class BluetoothService : Service() {
         if (_connectionState.value != ConnectionState.DISCONNECTED) return@launch
         _connectionState.value = ConnectionState.LISTENING
         try {
-            serverSocket = bluetoothAdapter.listenUsingRfcommWithServiceRecord(BluetoothConfig.SERVICE_NAME, BluetoothConfig.APP_UUID)
+            serverSocket = bluetoothAdapter.listenUsingRfcommWithServiceRecord(
+                BluetoothConfig.SERVICE_NAME,
+                BluetoothConfig.APP_UUID
+            )
             val socket = serverSocket?.accept()
-            handleConnection(socket)
+            // --- FIXED: The server is not the client ---
+            handleConnection(socket, isClient = false)
         } catch (e: IOException) {
             if (isActive) {
                 Log.e("BluetoothService", "Server socket failed: ${e.message}")
@@ -130,7 +140,8 @@ class BluetoothService : Service() {
         try {
             val socket = device.createRfcommSocketToServiceRecord(BluetoothConfig.APP_UUID)
             socket.connect()
-            handleConnection(socket)
+            // --- FIXED: This device is the client ---
+            handleConnection(socket, isClient = true)
         } catch (e: IOException) {
             Log.e("BluetoothService", "Failed to connect to device: ${e.message}")
             _error.value = "Connection failed. Make sure the other device is discoverable."
@@ -138,7 +149,8 @@ class BluetoothService : Service() {
         }
     }
 
-    private suspend fun handleConnection(socket: BluetoothSocket?) {
+    // --- FIXED: Added isClient flag to manage handshake flow ---
+    private suspend fun handleConnection(socket: BluetoothSocket?, isClient: Boolean) {
         socket ?: run {
             disconnect()
             return
@@ -148,35 +160,61 @@ class BluetoothService : Service() {
         inputStream = socket.inputStream
         outputStream = socket.outputStream
 
-        val keyExchangeSuccess = performKeyExchange()
+        val keyExchangeSuccess = performKeyExchange(isClient)
 
         if (keyExchangeSuccess) {
-            _connectionState.value = ConnectionState.CONNECTED
+            _verificationCode.value = SecurityHelper.generateVerificationCode(sharedSecret!!)
+            _connectionState.value = ConnectionState.AWAITING_VERIFICATION
             listenForMessages()
         } else {
             disconnect()
         }
     }
 
-    private suspend fun performKeyExchange(): Boolean = withContext(Dispatchers.IO) {
+    // --- FIXED: Implemented asymmetric handshake to prevent deadlock ---
+    private suspend fun performKeyExchange(isClient: Boolean): Boolean = withContext(Dispatchers.IO) {
         try {
-            keyPair = SecurityHelper.generateKeyPair()
-            val ownPublicKeyString = SecurityHelper.publicKeyToString(keyPair!!.public)
-            outputStream?.write(ownPublicKeyString.toByteArray())
-            Log.d("Security", "Sent public key.")
-
+            val localKeyPair = SecurityHelper.generateKeyPair()
+            keyPair = localKeyPair // Store it in the class property
+            val ownPublicKeyString = SecurityHelper.publicKeyToString(localKeyPair.public)
             val buffer = ByteArray(1024)
-            val byteCount = inputStream?.read(buffer) ?: -1
-            if (byteCount > 0) {
-                val otherPublicKeyString = String(buffer, 0, byteCount)
-                val otherPublicKey = SecurityHelper.stringToPublicKey(otherPublicKeyString)
-                Log.d("Security", "Received public key.")
-                sharedSecret = SecurityHelper.generateSharedSecret(keyPair!!.private, otherPublicKey)
-                Log.d("Security", "Shared secret established successfully.")
-                return@withContext true
+
+            // --- FIXED: Removed redundant initializer ---
+            val otherPublicKey: java.security.PublicKey
+
+            if (isClient) {
+                // Client writes first, then reads
+                outputStream?.write(ownPublicKeyString.toByteArray())
+                Log.d("Security", "Client: Sent public key.")
+
+                val byteCount = inputStream?.read(buffer) ?: -1
+                if (byteCount > 0) {
+                    val otherPublicKeyString = String(buffer, 0, byteCount)
+                    otherPublicKey = SecurityHelper.stringToPublicKey(otherPublicKeyString)
+                    Log.d("Security", "Client: Received public key.")
+                } else {
+                    throw IOException("Key exchange failed: No data received from server.")
+                }
             } else {
-                throw IOException("Key exchange failed: No data received.")
+                // Server reads first, then writes
+                val byteCount = inputStream?.read(buffer) ?: -1
+                if (byteCount > 0) {
+                    val otherPublicKeyString = String(buffer, 0, byteCount)
+                    otherPublicKey = SecurityHelper.stringToPublicKey(otherPublicKeyString)
+                    Log.d("Security", "Server: Received public key.")
+                } else {
+                    throw IOException("Key exchange failed: No data received from client.")
+                }
+
+                outputStream?.write(ownPublicKeyString.toByteArray())
+                Log.d("Security", "Server: Sent public key.")
             }
+
+            // --- FIXED: Removed unnecessary non-null assertions ---
+            sharedSecret = SecurityHelper.generateSharedSecret(localKeyPair.private, otherPublicKey)
+            Log.d("Security", "Shared secret established successfully.")
+            return@withContext true
+
         } catch (e: Exception) {
             Log.e("Security", "Key exchange failed: ${e.message}")
             _error.value = "Could not create a secure connection."
@@ -186,7 +224,7 @@ class BluetoothService : Service() {
 
     private fun listenForMessages() = scope.launch {
         val buffer = ByteArray(4096)
-        while (isActive && _connectionState.value == ConnectionState.CONNECTED) {
+        while (isActive && _connectionState.value != ConnectionState.DISCONNECTED) {
             try {
                 val byteCount = inputStream?.read(buffer) ?: -1
                 if (byteCount > 0) {
@@ -203,13 +241,26 @@ class BluetoothService : Service() {
                     if (decryptedContent != null) {
                         try {
                             val json = JSONObject(decryptedContent)
-                            if (json.optString("type") == "file") {
-                                val fileName = json.getString("name")
-                                val fileSize = json.getLong("size")
-                                handleFileReception(fileName, fileSize)
-                            } else {
-                                val message = ChatMessage(content = decryptedContent, isFromMe = false)
-                                _messages.update { it + message }
+                            when (json.optString("type")) {
+                                "file" -> {
+                                    val fileName = json.getString("name")
+                                    val fileSize = json.getLong("size")
+                                    handleFileReception(fileName, fileSize)
+                                }
+                                "verification" -> {
+                                    if (json.getString("status") == "accepted") {
+                                        isVerificationAcceptedByPeer = true
+                                        checkVerificationStatus()
+                                    } else {
+                                        _error.value = "Connection rejected by peer."
+                                        disconnect()
+                                    }
+                                }
+                                else -> {
+                                    val message =
+                                        ChatMessage(content = decryptedContent, isFromMe = false)
+                                    _messages.update { it + message }
+                                }
                             }
                         } catch (_: Exception) {
                             val message = ChatMessage(content = decryptedContent, isFromMe = false)
@@ -220,8 +271,10 @@ class BluetoothService : Service() {
                     throw IOException("Stream ended")
                 }
             } catch (_: IOException) {
-                _error.value = "Connection was lost."
-                disconnect()
+                if (_connectionState.value != ConnectionState.DISCONNECTED) {
+                    _error.value = "Connection was lost."
+                    disconnect()
+                }
                 break
             } catch (e: Exception) {
                 Log.e("Security", "Decryption or message handling failed: ${e.message}")
@@ -229,6 +282,46 @@ class BluetoothService : Service() {
                 disconnect()
                 break
             }
+        }
+    }
+
+    fun acceptVerification() = scope.launch {
+        if (_connectionState.value != ConnectionState.AWAITING_VERIFICATION) return@launch
+        isVerificationAcceptedByMe = true
+        try {
+            val verificationMessage = JSONObject().apply {
+                put("type", "verification")
+                put("status", "accepted")
+            }.toString()
+            val encryptedMessage = SecurityHelper.encrypt(verificationMessage, sharedSecret!!)
+            outputStream?.write(encryptedMessage.toByteArray())
+            checkVerificationStatus()
+        } catch (e: Exception) {
+            Log.e("Security", "Could not send verification acceptance", e)
+            disconnect()
+        }
+    }
+
+    fun rejectVerification() = scope.launch {
+        if (_connectionState.value != ConnectionState.AWAITING_VERIFICATION) return@launch
+        try {
+            val verificationMessage = JSONObject().apply {
+                put("type", "verification")
+                put("status", "rejected")
+            }.toString()
+            val encryptedMessage = SecurityHelper.encrypt(verificationMessage, sharedSecret!!)
+            outputStream?.write(encryptedMessage.toByteArray())
+        } catch (_: Exception) {
+            // Ignore, we are disconnecting anyway
+        } finally {
+            disconnect()
+        }
+    }
+
+    private fun checkVerificationStatus() {
+        if (isVerificationAcceptedByMe && isVerificationAcceptedByPeer) {
+            _connectionState.value = ConnectionState.CONNECTED
+            _verificationCode.value = null
         }
     }
 
@@ -258,7 +351,8 @@ class BluetoothService : Service() {
         var fileName = "unknown_file"
         var fileSize = 0L
 
-        _fileTransferProgress.value = FileTransferProgress(fileName = "Preparing...", progress = 0, isSending = true)
+        _fileTransferProgress.value =
+            FileTransferProgress(fileName = "Preparing...", progress = 0, isSending = true)
 
         try {
             applicationContext.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -269,7 +363,8 @@ class BluetoothService : Service() {
                 fileSize = cursor.getLong(sizeIndex)
             }
 
-            _fileTransferProgress.value = FileTransferProgress(fileName = fileName, progress = 0, isSending = true)
+            _fileTransferProgress.value =
+                FileTransferProgress(fileName = fileName, progress = 0, isSending = true)
 
             val header = JSONObject().apply {
                 put("type", "file")
@@ -288,12 +383,19 @@ class BluetoothService : Service() {
                     outputStream?.write(buffer, 0, bytesRead)
                     totalBytesSent += bytesRead
                     val progress = ((totalBytesSent * 100) / fileSize).toInt()
-                    _fileTransferProgress.value = _fileTransferProgress.value?.copy(progress = progress)
+                    _fileTransferProgress.value =
+                        _fileTransferProgress.value?.copy(progress = progress)
                 }
                 outputStream?.flush()
             }
-            _messages.update { it + ChatMessage(content = "You sent a file: $fileName", isFromMe = true, isSystemMessage = true) }
-        } catch(e: Exception) {
+            _messages.update {
+                it + ChatMessage(
+                    content = "You sent a file: $fileName",
+                    isFromMe = true,
+                    isSystemMessage = true
+                )
+            }
+        } catch (e: Exception) {
             Log.e("FileTransfer", "Failed to send file", e)
             _error.value = "Failed to send the file."
         } finally {
@@ -303,8 +405,15 @@ class BluetoothService : Service() {
 
     private fun handleFileReception(fileName: String, fileSize: Long) = scope.launch {
         withContext(Dispatchers.Main) {
-            _messages.update { it + ChatMessage(content = "Receiving file: $fileName...", isFromMe = false, isSystemMessage = true) }
-            _fileTransferProgress.value = FileTransferProgress(fileName = fileName, progress = 0, isSending = false)
+            _messages.update {
+                it + ChatMessage(
+                    content = "Receiving file: $fileName...",
+                    isFromMe = false,
+                    isSystemMessage = true
+                )
+            }
+            _fileTransferProgress.value =
+                FileTransferProgress(fileName = fileName, progress = 0, isSending = false)
         }
 
         try {
@@ -326,14 +435,21 @@ class BluetoothService : Service() {
                 totalBytesRead += bytesRead
                 val progress = ((totalBytesRead * 100) / fileSize).toInt()
                 withContext(Dispatchers.Main) {
-                    _fileTransferProgress.value = _fileTransferProgress.value?.copy(progress = progress)
+                    _fileTransferProgress.value =
+                        _fileTransferProgress.value?.copy(progress = progress)
                 }
             }
             fileOutputStream.close()
             withContext(Dispatchers.Main) {
-                _messages.update { it + ChatMessage(content = "File received: $fileName", isFromMe = false, isSystemMessage = true) }
+                _messages.update {
+                    it + ChatMessage(
+                        content = "File received: $fileName",
+                        isFromMe = false,
+                        isSystemMessage = true
+                    )
+                }
             }
-        } catch(e: Exception) {
+        } catch (e: Exception) {
             Log.e("FileTransfer", "Failed to receive file", e)
             _error.value = "Failed to receive the file."
         } finally {
@@ -363,11 +479,21 @@ class BluetoothService : Service() {
             clientSocket?.close()
             inputStream?.close()
             outputStream?.close()
-        } catch (_: IOException) {}
+        } catch (_: IOException) {
+        }
         if (_connectionState.value == ConnectionState.CONNECTED) {
-            _messages.update { it + ChatMessage(content="-- Disconnected --", isFromMe = false, isSystemMessage = true)}
+            _messages.update {
+                it + ChatMessage(
+                    content = "-- Disconnected --",
+                    isFromMe = false,
+                    isSystemMessage = true
+                )
+            }
         }
         _connectionState.value = ConnectionState.DISCONNECTED
+        _verificationCode.value = null
+        isVerificationAcceptedByMe = false
+        isVerificationAcceptedByPeer = false
     }
 
     private fun startForegroundService() {

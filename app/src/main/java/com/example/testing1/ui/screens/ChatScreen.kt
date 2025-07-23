@@ -5,12 +5,9 @@ package com.example.testing1.ui.screens
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -20,21 +17,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.AttachFile
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.testing1.bluetooth.ChatMessage
 import com.example.testing1.bluetooth.ConnectionState
 import com.example.testing1.bluetooth.FileTransferProgress
@@ -56,6 +51,8 @@ fun ChatScreen(
     val isDiscovering by viewModel.isDiscovering.collectAsState()
     val error by viewModel.error.collectAsState()
     val fileProgress by viewModel.fileTransferProgress.collectAsState()
+    // --- NEW: Get verification code from ViewModel ---
+    val verificationCode by viewModel.verificationCode.collectAsState()
 
     var messageText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -68,24 +65,20 @@ fun ChatScreen(
         uri?.let { viewModel.sendFile(it) }
     }
 
-    // --- FINAL, ROBUST VERSION of automatic discovery ---
-    val isConnectionScreenVisible = connectionState != ConnectionState.CONNECTED
+    val isConnectionScreenVisible = connectionState != ConnectionState.CONNECTED && connectionState != ConnectionState.AWAITING_VERIFICATION
     LaunchedEffect(isConnectionScreenVisible) {
         if (isConnectionScreenVisible) {
             viewModel.startDiscovery()
         } else {
-            // Stop discovery when we are connected
             viewModel.stopDiscovery()
         }
     }
 
-    // Ensure discovery is stopped when the user leaves the screen
     DisposableEffect(Unit) {
         onDispose {
             viewModel.stopDiscovery()
         }
     }
-    // --------------------------------------------------
 
     LaunchedEffect(error) {
         error?.let {
@@ -122,20 +115,9 @@ fun ChatScreen(
             EnhancedConnectionHeader(connectionState = connectionState)
 
             Box(modifier = Modifier.weight(1f)) {
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = connectionState == ConnectionState.CONNECTED,
-                    enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(300, easing = EaseOutCubic)) + fadeIn(animationSpec = tween(300)),
-                    exit = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(300, easing = EaseInCubic)) + fadeOut(animationSpec = tween(300))
-                ) {
+                if (connectionState == ConnectionState.CONNECTED) {
                     ChatMessagesList(messages = messages, listState = listState)
-                }
-
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = connectionState != ConnectionState.CONNECTED,
-                    enter = slideInVertically(initialOffsetY = { -it }, animationSpec = tween(400, easing = EaseOutCubic)) + fadeIn(animationSpec = tween(400)),
-                    exit = slideOutVertically(targetOffsetY = { -it }, animationSpec = tween(400, easing = EaseInCubic)) + fadeOut(animationSpec = tween(400)),
-                    modifier = Modifier.fillMaxSize()
-                ) {
+                } else {
                     EnhancedDeviceDiscoverySheet(
                         isDiscovering = isDiscovering,
                         discoveredDevices = discoveredDevices,
@@ -147,14 +129,8 @@ fun ChatScreen(
                 }
             }
 
-            AnimatedVisibility(
-                visible = fileProgress != null,
-                enter = slideInVertically(initialOffsetY = { it }),
-                exit = slideOutVertically(targetOffsetY = { it })
-            ) {
-                fileProgress?.let {
-                    FileTransferProgressBar(progressData = it)
-                }
+            if (fileProgress != null) {
+                FileTransferProgressBar(progressData = fileProgress!!)
             }
 
             EnhancedMessageInput(
@@ -174,8 +150,115 @@ fun ChatScreen(
                 }
             )
         }
+
+        // --- NEW: Show the verification dialog when needed ---
+        if (connectionState == ConnectionState.AWAITING_VERIFICATION && verificationCode != null) {
+            VerificationDialog(
+                verificationCode = verificationCode!!,
+                onVerifyClick = { viewModel.acceptVerification() },
+                onCloseClick = { viewModel.rejectVerification() }
+            )
+        }
     }
 }
+
+// --- NEW: Composable for the Verification Dialog ---
+@Composable
+fun VerificationDialog(
+    verificationCode: String,
+    onVerifyClick: () -> Unit,
+    onCloseClick: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = { /* Disallow dismissing by clicking outside */ },
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(24.dp)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.VerifiedUser,
+                    contentDescription = "Verification Icon",
+                    modifier = Modifier.size(48.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Verify Connection",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "To ensure your connection is secure, please confirm that the other user sees the same code.",
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(24.dp))
+                Box(
+                    modifier = Modifier
+                        .background(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .padding(horizontal = 24.dp, vertical = 12.dp)
+                ) {
+                    Text(
+                        text = verificationCode,
+                        style = MaterialTheme.typography.displayMedium,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Spacer(modifier = Modifier.height(24.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // "Close" button
+                    Button(
+                        onClick = onCloseClick,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        )
+                    ) {
+                        Text("Close")
+                    }
+                    // "Verify" button
+                    Button(
+                        onClick = onVerifyClick,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF4CAF50), // A nice green color
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text("Verify")
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 fun FileTransferProgressBar(progressData: FileTransferProgress) {
@@ -203,20 +286,11 @@ fun EnhancedConnectionHeader(connectionState: ConnectionState) {
     val (text, color, icon) = when (connectionState) {
         ConnectionState.CONNECTED -> Triple("Connected", Color(0xFF4CAF50), Icons.Filled.Check)
         ConnectionState.CONNECTING -> Triple("Connecting...", Color(0xFFFF9800), null)
+        // --- NEW: Text for verification state ---
+        ConnectionState.AWAITING_VERIFICATION -> Triple("Verifying connection...", MaterialTheme.colorScheme.primary, null)
         ConnectionState.LISTENING -> Triple("Waiting for connection...", MaterialTheme.colorScheme.primary, null)
         else -> Triple("Disconnected", MaterialTheme.colorScheme.error, Icons.Filled.Close)
     }
-
-    val infiniteTransition = rememberInfiniteTransition(label = "connection_pulse")
-    val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = if (connectionState == ConnectionState.CONNECTING || connectionState == ConnectionState.LISTENING) 1.1f else 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulse_scale"
-    )
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -226,12 +300,6 @@ fun EnhancedConnectionHeader(connectionState: ConnectionState) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .animateContentSize(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessLow
-                    )
-                )
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -240,15 +308,11 @@ fun EnhancedConnectionHeader(connectionState: ConnectionState) {
                     imageVector = icon,
                     contentDescription = null,
                     tint = color,
-                    modifier = Modifier
-                        .scale(pulseScale)
-                        .size(24.dp)
+                    modifier = Modifier.size(24.dp)
                 )
             } else {
                 CircularProgressIndicator(
-                    modifier = Modifier
-                        .size(20.dp)
-                        .scale(pulseScale),
+                    modifier = Modifier.size(20.dp),
                     strokeWidth = 2.dp,
                     color = color
                 )
@@ -282,12 +346,7 @@ fun ChatMessagesList(
         ) { message ->
             EnhancedMessageBubble(
                 message = message,
-                Modifier.animateItem(
-                    placementSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessLow
-                    )
-                )
+                Modifier.animateItem()
             )
         }
     }
@@ -316,10 +375,9 @@ fun EnhancedDeviceDiscoverySheet(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                AnimatedButton(
+                Button(
                     onClick = onScanClick,
-                    modifier = Modifier.weight(1f),
-                    enabled = true
+                    modifier = Modifier.weight(1f)
                 ) {
                     if (isDiscovering) {
                         Row(
@@ -347,53 +405,44 @@ fun EnhancedDeviceDiscoverySheet(
                         }
                     }
                 }
-                AnimatedButton(
+                Button(
                     onClick = onBecomeDiscoverableClick,
                     modifier = Modifier.weight(1f)
                 ) {
                     Text("Be Discoverable")
                 }
             }
-            Spacer(modifier = Modifier.height(24.dp))
-            HorizontalDivider()
-            AnimatedContent(
-                targetState = discoveredDevices.isEmpty() && !isDiscovering,
-                transitionSpec = {
-                    slideInVertically { it } + fadeIn() togetherWith
-                            slideOutVertically { -it } + fadeOut()
-                },
-                label = "device_list_content"
-            ) { isEmpty ->
-                if (isEmpty) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(32.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "No devices found.\nEnsure Bluetooth is enabled and try scanning.",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
+            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+
+            if (discoveredDevices.isEmpty() && !isDiscovering) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No devices found.\nEnsure Bluetooth is enabled and try scanning.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(vertical = 16.dp)
+                ) {
+                    items(
+                        items = discoveredDevices,
+                        key = { device -> device.address }
+                    ) { device ->
+                        DeviceCard(
+                            device = device,
+                            deviceName = getDeviceName(device),
+                            onConnectClick = { onConnectClick(device) }
                         )
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(vertical = 16.dp)
-                    ) {
-                        items(
-                            items = discoveredDevices,
-                            key = { device -> device.address }
-                        ) { device ->
-                            DeviceCard(
-                                device = device,
-                                deviceName = getDeviceName(device),
-                                onConnectClick = { onConnectClick(device) }
-                            )
-                        }
                     }
                 }
             }
@@ -407,23 +456,10 @@ fun DeviceCard(
     deviceName: String,
     onConnectClick: () -> Unit
 ) {
-    var isPressed by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.95f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "device_card_scale"
-    )
-
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .scale(scale)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                onConnectClick()
-            },
+            .clickable(onClick = onConnectClick),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -541,13 +577,6 @@ fun EnhancedMessageInput(
     isEnabled: Boolean,
     onAttachFileClick: () -> Unit
 ) {
-    val sendButtonEnabled = isEnabled && text.isNotBlank()
-    val sendButtonScale by animateFloatAsState(
-        targetValue = if (sendButtonEnabled) 1f else 0.8f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "send_button_scale"
-    )
-
     Surface(
         shadowElevation = 8.dp,
         color = MaterialTheme.colorScheme.surface
@@ -594,50 +623,22 @@ fun EnhancedMessageInput(
             Spacer(modifier = Modifier.width(12.dp))
             IconButton(
                 onClick = onSendClick,
-                enabled = sendButtonEnabled,
+                enabled = isEnabled && text.isNotBlank(),
                 modifier = Modifier
                     .size(48.dp)
-                    .scale(sendButtonScale)
                     .clip(CircleShape)
                     .background(
-                        if (sendButtonEnabled) MaterialTheme.colorScheme.primary
+                        if (isEnabled && text.isNotBlank()) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
                     )
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.Send,
                     contentDescription = "Send message",
-                    tint = if (sendButtonEnabled) MaterialTheme.colorScheme.onPrimary
+                    tint = if (isEnabled && text.isNotBlank()) MaterialTheme.colorScheme.onPrimary
                     else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
                 )
             }
         }
-    }
-}
-
-@Composable
-fun AnimatedButton(
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-    content: @Composable () -> Unit
-) {
-    var isPressed by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.95f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "button_scale"
-    )
-
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = modifier.scale(scale),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.primary,
-            disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-        )
-    ) {
-        content()
     }
 }
